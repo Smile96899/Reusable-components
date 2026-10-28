@@ -1,0 +1,14 @@
+# /etc/deploykit/monitor.conf —— 只放在服务器上，不要提交到仓库（chmod 600）
+
+# 告警里显示的节点名
+NODE_NAME=prod-1
+
+# Telegram（留空则不发）
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+
+# 通用 Webhook（企业微信 / 钉钉 / 飞书 / Slack 等，POST JSON {"text": ...}）
+WEBHOOK_URL=
+
+# 连续失败几次才告警，避免偶发抖动
+FAIL_THRESHOLD=2

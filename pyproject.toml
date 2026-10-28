@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deploykit"
+version = "0.1.0"
+description = "通用的多服务器发版工具（打包、备份、原子切换、滚动发布、自动回滚）"
+requires-python = ">=3.11"
+
+[project.scripts]
+deploykit = "deploykit:main"
+
+[tool.setuptools]
+py-modules = ["deploykit"]

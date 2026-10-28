@@ -1,0 +1,97 @@
+# ICONIQ（Canada 仓库）的 deploykit 配置示例。
+# 用法：复制到 Canada 仓库根目录，命名为 deploy.toml，然后
+#   python <deploykit>/deploykit.py deploy --dry-run   # 先看会执行什么
+#   python <deploykit>/deploykit.py deploy
+# 对应 AGENTS.md 的发版规则：只传源码和前端构建，不碰 .env / 数据库 / uploads，
+# 重启前做 WAL 安全的 SQLite 在线备份 + integrity_check + 记录数。
+
+name = "iconiq"
+keep_releases = 5
+auto_rollback = true
+
+[vars]
+app = "/opt/iconiq-20261018/api"
+node = "/opt/node-v20.19.2-linux-x64/bin/node"
+
+[git]
+require_clean = true
+branch = "main"
+require_pushed = true
+
+[[steps]]
+run = "npm test"
+cwd = "api"
+
+[[steps]]
+run = "npm run build"
+cwd = "build-registration-11/live-web"
+
+# 后端源码：只覆盖有变化的文件
+[[artifacts]]
+name = "api"
+src = "api"
+dest = "{{app}}"
+mode = "overlay"
+exclude = [
+  # 不带 / 的模式匹配任意层级；带 / 的只匹配从 api/ 开始的路径
+  ".env", ".env.*", "database.sqlite*", "*.db", "*.log", "node_modules",
+  "data/**", "backups/**", "logs/**", "frontend/**", "public/uploads/**", "tests/**",
+  "Dockerfile", ".dockerignore",
+]
+require = ["app.js", "package.json"]
+verify = [
+  "cd {{stage}} && find . -name '*.js' -print0 | xargs -0 -n1 {{node}} --check",
+  # 用线上已安装的 ejs 编译新模板
+  "cd {{dest}} && {{node}} -e \"const ejs=require('ejs'),fs=require('fs'),p=require('path');const w=d=>fs.readdirSync(d,{withFileTypes:true}).flatMap(e=>e.isDirectory()?w(p.join(d,e.name)):[p.join(d,e.name)]);const v=p.join('{{stage}}','views');if(fs.existsSync(v))for(const f of w(v).filter(f=>f.endsWith('.ejs')))ejs.compile(fs.readFileSync(f,'utf8'),{filename:f});console.log('ejs ok')\"",
+]
+after_activate = [
+  "if grep -qx package-lock.json {{release}}/overlay/api.changed {{release}}/overlay/api.new; then cd {{dest}} && PATH=$(dirname {{node}}):$PATH npm ci --omit=dev; fi",
+]
+
+# 前端：整目录原子切换，dist 的内容成为 frontend/dist 的内容
+[[artifacts]]
+name = "web"
+src = "build-registration-11/live-web/dist"
+dest = "{{app}}/frontend/dist"
+mode = "swap"
+require = ["index.html"]
+
+[[backups]]
+name = "database"
+type = "sqlite"
+path = "{{app}}/database.sqlite"
+integrity_check = true
+count_tables = ["users", "admins", "positions", "trading_orders", "funds_logs", "ipo_products", "ipo_orders"]
+
+[restart]
+run = ["systemctl restart iconiq.service"]
+wait = ["systemctl is-active --quiet iconiq.service"]
+
+[[checks]]
+name = "后端 health"
+url = "http://127.0.0.1:3310/api/health"
+contains = "ok"
+
+[[checks]]
+name = "Nginx /"
+url = "http://127.0.0.1:8088/"
+headers = { Host = "k7m2x.iconiq.top" }
+
+[[checks]]
+name = "Nginx /market"
+url = "http://127.0.0.1:8088/market"
+headers = { Host = "k7m2x.iconiq.top" }
+
+[[checks]]
+name = "前端资源"
+run = "a=$(grep -oE '/assets/[^\"]+\\.js' {{app}}/frontend/dist/index.html | head -n1) && curl -fsS -o /dev/null -H 'Host: k7m2x.iconiq.top' http://127.0.0.1:8088$a"
+
+[[checks]]
+name = "启动日志无报错"
+run = "! journalctl -u iconiq.service --since '-2 min' --no-pager | grep -qiE 'SyntaxError|Cannot find module|EADDRINUSE|initialization failed'"
+retries = 1
+
+[[targets]]
+name = "prod"
+host = "root@43.110.26.168"
+releases_dir = "/opt/iconiq-20261018/releases"

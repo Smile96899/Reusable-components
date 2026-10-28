@@ -1,0 +1,110 @@
+# deploy.toml —— 放在项目仓库根目录。这里不要写任何密码/密钥。
+# 占位符 {{name}} 可用：vars 里的变量、target.vars 里的变量，以及内置的
+#   {{name}} {{target}} {{host}} {{id}} {{releases_dir}} {{release}}
+#   artifact 的 verify 里还有 {{stage}}（解包目录）、{{dest}}（目标目录）
+#   backup type="command" 里还有 {{out}}（备份输出目录）
+
+name = "myapp"
+keep_releases = 5        # 每台服务器保留最近几个版本（含备份、可回滚）
+auto_rollback = true     # 激活后任何一步失败，自动回滚代码
+
+[vars]
+app = "/opt/myapp"
+
+[git]
+require_clean = true     # 已跟踪文件有改动就拒绝发布（未跟踪文件不算，include_untracked = true 可改）
+branch = "main"          # 只允许从这个分支发
+require_pushed = true    # HEAD 必须已经推送到 origin/main
+
+# ---- 本地步骤：按顺序执行，失败就终止 ----
+[[steps]]
+run = "npm test"
+cwd = "server"
+
+[[steps]]
+run = "npm run build"
+cwd = "web"
+
+# ---- 发布内容 ----
+# mode = "overlay"：只覆盖有变化的文件，不删除服务器上已有的其他文件（适合后端源码目录，
+#                   .env、数据库、uploads 等运行时文件不受影响）。被覆盖的旧文件会备份，可回滚。
+# mode = "swap"   ：整目录替换，先放到 <dest>-next-<id>，检查后原子切换，旧目录留作 <dest>-backup-<id>
+#                   （适合前端构建产物）。src 目录的“内容”成为 dest 的内容。
+[[artifacts]]
+name = "server"
+src = "server"
+dest = "{{app}}/server"
+mode = "overlay"
+exclude = [".env", ".env.*", "*.sqlite*", "node_modules", "uploads", "logs", "*.log", "tests"]
+require = ["app.js"]
+verify = ["cd {{stage}} && find . -name '*.js' -print0 | xargs -0 -n1 node --check"]
+# 依赖变了才重装：overlay 会把变更/新增的文件列表写到 {{release}}/overlay/<name>.changed / .new
+after_activate = ["if grep -qx package-lock.json {{release}}/overlay/server.changed {{release}}/overlay/server.new; then cd {{dest}} && npm ci --omit=dev; fi"]
+
+[[artifacts]]
+name = "web"
+src = "web/dist"
+dest = "{{app}}/web/dist"
+mode = "swap"
+require = ["index.html"]
+
+# ---- 发版前备份（每次发版都做，存放在 <releases_dir>/<id>/backup/）----
+[[backups]]
+name = "db"
+type = "sqlite"                       # 在线备份（SQLite backup API，WAL 安全）
+path = "{{app}}/server/database.sqlite"
+integrity_check = true
+count_tables = ["users", "orders"]
+
+# [[backups]]
+# name = "mysql"
+# type = "mysql"
+# dump_command = "docker exec -i mysql mysqldump"   # 默认 mysqldump
+# options = "--defaults-extra-file=/root/.my.cnf mydb"
+
+# [[backups]]
+# name = "uploads"
+# type = "command"
+# run = "tar -czf {{out}}/uploads.tar.gz -C {{app}} uploads"
+
+# ---- 重启 ----
+[restart]
+run = ["systemctl restart myapp.service"]
+wait = ["systemctl is-active --quiet myapp.service"]
+
+# ---- 发版后检查（在服务器上执行；where = "local" 表示从本机访问公网地址）----
+[[checks]]
+name = "健康检查"
+url = "http://127.0.0.1:3000/api/health"
+status = 200
+contains = "ok"
+
+[[checks]]
+name = "首页"
+url = "http://127.0.0.1:8080/"
+headers = { Host = "www.example.com" }
+
+[[checks]]
+name = "公网首页"
+where = "local"
+url = "https://www.example.com/"
+
+[[checks]]
+name = "最近日志没有报错"
+run = "! journalctl -u myapp.service --since '-2 min' --no-pager | grep -qiE 'error|exception'"
+retries = 1
+
+# ---- 服务器：按顺序滚动发布，任何一台失败就停 ----
+[[targets]]
+name = "node-a"
+host = "root@1.2.3.4"
+# port = 22
+# identity = "~/.ssh/id_ed25519"
+# ssh_options = ["StrictHostKeyChecking=accept-new"]
+releases_dir = "/opt/myapp/releases"
+
+[[targets]]
+name = "node-b"
+host = "root@5.6.7.8"
+releases_dir = "/opt/myapp/releases"
+vars = { app = "/srv/myapp" }   # 每台服务器可以覆盖变量

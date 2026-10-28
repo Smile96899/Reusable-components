@@ -1,0 +1,8 @@
+[Unit]
+Description=deploykit health monitor
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/deploykit-monitor
+TimeoutStartSec=120
